@@ -225,14 +225,14 @@ def render_flashcard_content(data: Dict[str, Any]):
                     <div class="flashcard-front">
                         <div class="flashcard-icon">🃏</div>
                         <h3>{front_text}</h3>
-                        <p style="opacity: 0.8; font-size: 0.9em; margin-top: 20px;">👆 Click to reveal answer</p>
+                        <p style="opacity: 0.8; font-size: 0.9em; margin-top: 20px;"></p>
                     </div>
                 <div class="flashcard-back">
                     <div class="flashcard-icon">✨</div>
                     <h3>Answer</h3>
                     <p>{back_text}</p>
-                    {f'<p style="opacity: 0.9; font-size: 0.85em; margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.25); border-radius: 5px;"><strong>📄 Source:</strong> {source_ref}</p>' if source_ref else ''}
-                    <p style="opacity: 0.8; font-size: 0.9em; margin-top: 20px;">👆 Click to flip back</p>
+                    {f'<p style="opacity: 0.9; font-size: 0.85em; margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.25); border-radius: 5px;"><strong>📄 Source:</strong> {html.escape(card.get("source_reference", ""))}</p>' if card.get("source_reference") else ''}
+                    <p style="opacity: 0.8; font-size: 0.9em; margin-top: 20px;"></p>
                 </div>
                 </div>
             </div>
@@ -373,12 +373,14 @@ def render_interactive_content(data: Dict[str, Any]):
                     st.markdown("### 💡 Model Answer")
                     answer_text = html.escape(step["checkpoint_answer"])
                     st.markdown(f"""
-                    <div style="background-color: #f0f2f6; 
+                    <div style="background-color: #ffffff; 
+                                color: #000000;
                                 padding: 20px; 
                                 border-radius: 8px; 
                                 border-left: 4px solid #667eea;
-                                margin-top: 10px;">
-                        {answer_text}
+                                margin-top: 10px;
+                                box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <p style="color: #000000; margin: 0;">{answer_text}</p>
                     </div>
                     """, unsafe_allow_html=True)
         
@@ -528,14 +530,20 @@ def main():
                     )
                     
                     if extract_result.get("success"):
-                        st.session_state.extracted_chunks = extract_result.get("chunks", [])
+                        extracted_chunks = extract_result.get("chunks", [])
+                        # Filter out empty chunks
+                        extracted_chunks = [chunk for chunk in extracted_chunks if chunk and chunk.strip()]
+                        st.session_state.extracted_chunks = extracted_chunks
                         st.success(f"✅ Extracted {len(st.session_state.extracted_chunks)} chunks")
                         
-                        # Auto-generate content based on preference
-                        if survey_completed and preference != LearningMode.UNKNOWN.value:
-                            generate_content_for_mode(preference)
+                        if not st.session_state.extracted_chunks:
+                            st.error("⚠️ No valid content chunks extracted. Please try a different file.")
                         else:
-                            generate_mixed_bundle()
+                            # Auto-generate content based on preference
+                            if survey_completed and preference != LearningMode.UNKNOWN.value:
+                                generate_content_for_mode(preference)
+                            else:
+                                generate_mixed_bundle()
                     else:
                         st.error(f"Error: {extract_result.get('error')}")
                     
@@ -616,12 +624,22 @@ def main():
 def generate_content_for_mode(mode: str):
     """Generate content for a specific mode"""
     with st.spinner(f"Generating {mode} content..."):
+        # Pass chunks directly as fallback if available in session state
+        params = {
+            "content_type": mode,
+            "session_id": st.session_state.session_id
+        }
+        # Add chunks from session state as fallback AND primary source
+        if st.session_state.extracted_chunks:
+            params["extracted_chunks"] = st.session_state.extracted_chunks
+            params["chunks"] = st.session_state.extracted_chunks  # Also try the standard key
+            logger.get_logger().info(f"Passing {len(st.session_state.extracted_chunks)} chunks to generate function")
+        else:
+            logger.get_logger().warning("No extracted_chunks in session state!")
+        
         result = st.session_state.manager.process_user_request(
             "generate",
-            {
-                "content_type": mode,
-                "session_id": st.session_state.session_id
-            },
+            params,
             st.session_state.session_id
         )
         
@@ -654,12 +672,22 @@ def generate_content_for_mode(mode: str):
 def generate_mixed_bundle():
     """Generate mixed bundle with all content types"""
     with st.spinner("Generating mixed content bundle..."):
+        # Pass chunks directly as fallback if available in session state
+        params = {
+            "content_type": ContentType.MIXED.value,
+            "session_id": st.session_state.session_id
+        }
+        # Add chunks from session state as fallback AND primary source
+        if st.session_state.extracted_chunks:
+            params["extracted_chunks"] = st.session_state.extracted_chunks
+            params["chunks"] = st.session_state.extracted_chunks  # Also try the standard key
+            logger.get_logger().info(f"Passing {len(st.session_state.extracted_chunks)} chunks to generate_mixed_bundle")
+        else:
+            logger.get_logger().warning("No extracted_chunks in session state for mixed bundle!")
+        
         result = st.session_state.manager.process_user_request(
             "generate",
-            {
-                "content_type": ContentType.MIXED.value,
-                "session_id": st.session_state.session_id
-            },
+            params,
             st.session_state.session_id
         )
         

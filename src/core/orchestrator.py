@@ -25,16 +25,21 @@ class ManagerAgent:
     def handle_command(self, command: ManagerCommand) -> Dict[str, Any]:
         """Handle a manager command synchronously"""
         try:
+            # Add session_id to params if provided
+            params = command.params.copy() if command.params else {}
+            if command.session_id:
+                params["session_id"] = command.session_id
+            
             if command.action == "extract":
-                return self._handle_extract(command.params)
+                return self._handle_extract(params)
             elif command.action == "generate":
-                return self._handle_generate(command.params)
+                return self._handle_generate(params)
             elif command.action == "update_rl":
-                return self._handle_update_rl(command.params)
+                return self._handle_update_rl(params)
             elif command.action == "recommend":
-                return self._handle_recommend(command.params)
+                return self._handle_recommend(params)
             elif command.action == "survey":
-                return self._handle_survey(command.params)
+                return self._handle_survey(params)
             elif command.action == "reset_preferences":
                 return self._handle_reset_preferences()
             else:
@@ -57,12 +62,18 @@ class ManagerAgent:
         response = nlp_agent.extract(request)
         
         # Store in session context
-        if "session_id" in params:
-            self.session_context[params["session_id"]] = {
+        session_id = params.get("session_id")
+        self.logger.info(f"Extract handler - session_id: {session_id}, chunks count: {len(response.chunks) if response.chunks else 0}")
+        
+        if session_id:
+            self.session_context[session_id] = {
                 "chunks": response.chunks,
                 "summary": response.summary
             }
-            self.logger.info(f"Stored {len(response.chunks)} chunks in session {params['session_id']} (total {sum(len(c) for c in response.chunks)} chars)")
+            self.logger.info(f"Stored {len(response.chunks)} chunks in session {session_id} (total {sum(len(c) for c in response.chunks)} chars)")
+            self.logger.info(f"Session context keys: {list(self.session_context.keys())}")
+        else:
+            self.logger.warning("No session_id provided in extract params, chunks will not be stored in session context")
         
         return {
             "success": response.success,
@@ -86,9 +97,25 @@ class ManagerAgent:
         session_id = params.get("session_id")
         
         if not chunks and session_id:
+            self.logger.info(f"Generate handler - session_id: {session_id}")
+            self.logger.info(f"Available session context keys: {list(self.session_context.keys())}")
             session_data = self.session_context.get(session_id, {})
             chunks = session_data.get("chunks", [])
             self.logger.info(f"Retrieved {len(chunks)} chunks from session {session_id}")
+            if chunks:
+                self.logger.info(f"First chunk preview: {chunks[0][:100]}...")
+        
+        # Fallback: if still no chunks, try to get from params (in case UI passed them directly)
+        if not chunks:
+            # Check if chunks were passed in params but with a different key
+            if "extracted_chunks" in params:
+                chunks = params.get("extracted_chunks", [])
+                self.logger.info(f"Retrieved {len(chunks)} chunks from params.extracted_chunks")
+        
+        # Filter out empty chunks
+        if chunks:
+            chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
+            self.logger.info(f"After filtering empty chunks: {len(chunks)} chunks remaining")
         
         # Validate chunks are present and non-empty
         if not chunks:
