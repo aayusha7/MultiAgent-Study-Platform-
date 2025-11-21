@@ -45,6 +45,7 @@ class GenerationRequest:
     chunks: List[str]
     num_items: Optional[int] = None  # Number of questions/cards/steps
     context: Optional[str] = None
+    feedback_context: Optional[Dict[str, Any]] = None  # Feedback history and preferences for adaptation
 
 
 @dataclass

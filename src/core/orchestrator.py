@@ -17,10 +17,11 @@ from .logger import logger
 class ManagerAgent:
     """Orchestrates all agents and manages workflow"""
     
-    def __init__(self):
+    def __init__(self, username: Optional[str] = None):
         self.logger = logger.get_logger()
         self.session_context: Dict[str, Any] = {}
-        self.state: RLState = load_state()
+        self.username = username
+        self.state: RLState = load_state(username)
     
     def handle_command(self, command: ManagerCommand) -> Dict[str, Any]:
         """Handle a manager command synchronously"""
@@ -58,7 +59,9 @@ class ManagerAgent:
         from ..agents.nlp_agent import NLPAgent
         
         nlp_agent = NLPAgent()
-        request = ExtractionRequest(**params)
+        # Remove session_id from params as ExtractionRequest doesn't accept it
+        extract_params = {k: v for k, v in params.items() if k in ['file_path', 'file_content', 'file_type']}
+        request = ExtractionRequest(**extract_params)
         response = nlp_agent.extract(request)
         
         # Store in session context
@@ -143,16 +146,79 @@ class ManagerAgent:
         
         self.logger.info(f"Generating {content_type.value} with {len(chunks)} chunks (total {sum(len(c) for c in chunks)} chars)")
         
-        # Calculate dynamic item count based on chunks
-        num_items = params.get("num_items")
-        if num_items is None:
-            num_items = self._calculate_item_count(content_type, len(chunks))
+        # Reload state to get latest feedback before generating context
+        self.state = load_state(self.username)
         
-        request = GenerationRequest(
+        # Get feedback context for content adaptation
+        # For mixed bundle, get context for all types and calculate adaptive quantities
+        if content_type == ContentType.MIXED:
+            quiz_fc = self._get_feedback_context("quiz")
+            flashcard_fc = self._get_feedback_context("flashcard")
+            interactive_fc = self._get_feedback_context("interactive")
+            
+            feedback_context = {
+                "quiz": quiz_fc,
+                "flashcard": flashcard_fc,
+                "interactive": interactive_fc
+            }
+            
+            # Calculate adaptive quantities for each type in mixed bundle
+            # Store in params so LLM agent can use them
+            base_quiz = self._calculate_item_count(ContentType.QUIZ, len(chunks))
+            base_flashcard = self._calculate_item_count(ContentType.FLASHCARD, len(chunks))
+            base_interactive = self._calculate_item_count(ContentType.INTERACTIVE, len(chunks))
+            
+            # Adjust based on feedback
+            quiz_count = self._calculate_adaptive_count(base_quiz, quiz_fc, "quiz")
+            flashcard_count = self._calculate_adaptive_count(base_flashcard, flashcard_fc, "flashcard")
+            interactive_count = self._calculate_adaptive_count(base_interactive, interactive_fc, "interactive")
+            
+            # Store in feedback_context for LLM agent to use
+            feedback_context["quiz"]["adaptive_count"] = quiz_count
+            feedback_context["flashcard"]["adaptive_count"] = flashcard_count
+            feedback_context["interactive"]["adaptive_count"] = interactive_count
+        else:
+            feedback_context = self._get_feedback_context(content_type_str)
+        
+        # Calculate dynamic item count based on chunks AND feedback
+        # For MIXED, num_items is not used (each type has its own adaptive count)
+        num_items = params.get("num_items")
+        if content_type != ContentType.MIXED:
+            if num_items is None:
+                base_count = self._calculate_item_count(content_type, len(chunks))
+                # Adjust quantity based on feedback
+                if feedback_context.get("has_feedback"):
+                    avg_feedback = feedback_context.get("average_feedback", 0.5)
+                    if avg_feedback < 0.4:  # Disliked content
+                        # Reduce by 40-60% for disliked content
+                        reduction_factor = 0.4 + (avg_feedback * 0.4)  # 0.4 to 0.56 range
+                        num_items = max(2, int(base_count * reduction_factor))
+                        self.logger.info(f"Reduced {content_type_str} items from {base_count} to {num_items} due to low feedback ({avg_feedback:.2f})")
+                    elif avg_feedback > 0.7:  # Liked content - increase quantity
+                        # Increase by 20-50% for liked content
+                        increase_factor = 1.2 + ((avg_feedback - 0.7) * 1.0)  # 1.2 to 1.5 range
+                        num_items = min(int(base_count * increase_factor), base_count * 2)  # Cap at 2x
+                        self.logger.info(f"Increased {content_type_str} items from {base_count} to {num_items} due to high feedback ({avg_feedback:.2f})")
+                    else:
+                        num_items = base_count
+                else:
+                    num_items = base_count
+            else:
+                num_items = num_items
+        else:
+            # For MIXED, num_items is not used - adaptive counts are in feedback_context
+            num_items = None
+            self.logger.info(f"Mixed bundle: quiz={feedback_context.get('quiz', {}).get('adaptive_count', 'N/A')}, "
+                           f"flashcard={feedback_context.get('flashcard', {}).get('adaptive_count', 'N/A')}, "
+                           f"interactive={feedback_context.get('interactive', {}).get('adaptive_count', 'N/A')}")
+        
+
+        request = GenerationRequest(    
             content_type=content_type,
             chunks=chunks,
             num_items=num_items,
-            context=params.get("context")
+            context=params.get("context"),
+            feedback_context=feedback_context
         )
         
         response = llm_agent.generate(request)
@@ -168,12 +234,12 @@ class ManagerAgent:
         """Route feedback update to RL Agent"""
         from ..agents.rl_agent import RLAgent
         
-        rl_agent = RLAgent()
+        rl_agent = RLAgent(username=self.username)
         request = RLUpdateRequest(**params)
         rl_agent.update_from_feedback(request)
         
         # Reload state after update
-        self.state = load_state()
+        self.state = load_state(self.username)
         
         return {"success": True}
     
@@ -181,7 +247,7 @@ class ManagerAgent:
         """Get recommendation from RL Agent"""
         from ..agents.rl_agent import RLAgent
         
-        rl_agent = RLAgent()
+        rl_agent = RLAgent(username=self.username)
         recommendation = rl_agent.recommend_mode()
         
         return {
@@ -200,7 +266,7 @@ class ManagerAgent:
         self.state.total_sessions += 1
         self.state.last_updated = datetime.now().isoformat()
         
-        save_state(self.state)
+        save_state(self.state, self.username)
         
         return {
             "success": True,
@@ -210,7 +276,8 @@ class ManagerAgent:
     
     def _handle_reset_preferences(self) -> Dict[str, Any]:
         """Reset user preferences and RL state"""
-        self.state = reset_state()
+        from .memory import reset_state
+        self.state = reset_state(self.username)
         self.session_context.clear()
         
         return {
@@ -229,6 +296,38 @@ class ManagerAgent:
         else:
             return 5
     
+    def _calculate_adaptive_count(self, base_count: int, feedback_context: Dict[str, Any], content_type: str) -> int:
+        """
+        Calculate adaptive item count based on feedback.
+        
+        Args:
+            base_count: Base count before feedback adjustment
+            feedback_context: Feedback context for this content type
+            content_type: Type of content (for logging)
+        
+        Returns:
+            Adjusted item count
+        """
+        if not feedback_context.get("has_feedback"):
+            return base_count
+        
+        avg_feedback = feedback_context.get("average_feedback", 0.5)
+        
+        if avg_feedback < 0.4:  # Disliked content
+            # Reduce by 40-60% for disliked content
+            reduction_factor = 0.4 + (avg_feedback * 0.4)  # 0.4 to 0.56 range
+            adjusted = max(2, int(base_count * reduction_factor))
+            self.logger.info(f"Reduced {content_type} items from {base_count} to {adjusted} due to low feedback ({avg_feedback:.2f})")
+            return adjusted
+        elif avg_feedback > 0.7:  # Liked content - increase quantity
+            # Increase by 20-50% for liked content
+            increase_factor = 1.2 + ((avg_feedback - 0.7) * 1.0)  # 1.2 to 1.5 range
+            adjusted = min(int(base_count * increase_factor), base_count * 2)  # Cap at 2x
+            self.logger.info(f"Increased {content_type} items from {base_count} to {adjusted} due to high feedback ({avg_feedback:.2f})")
+            return adjusted
+        else:
+            return base_count
+    
     def get_current_preference(self) -> Optional[str]:
         """Get current user preference from state"""
         if not self.state.survey_completed:
@@ -245,4 +344,89 @@ class ManagerAgent:
     def get_session_context(self, session_id: str) -> Dict[str, Any]:
         """Get session context"""
         return self.session_context.get(session_id, {})
+    
+    def _get_feedback_context(self, content_type: str) -> Dict[str, Any]:
+        """
+        Analyze feedback history to create adaptation context for content generation.
+        
+        Args:
+            content_type: Type of content being generated ("quiz", "flashcard", "interactive")
+        
+        Returns:
+            Dictionary with feedback insights for content adaptation
+        """
+        feedback_context = {
+            "has_feedback": False,
+            "average_feedback": 0.5,
+            "feedback_count": 0,
+            "positive_rate": 0.5,
+            "adaptation_instructions": ""
+        }
+        
+        # Get feedback history for this content type
+        mode_history = [entry for entry in self.state.mode_history if entry.get("mode") == content_type]
+        
+        if not mode_history:
+            return feedback_context
+        
+        feedback_context["has_feedback"] = True
+        feedback_context["feedback_count"] = len(mode_history)
+        
+        # Calculate average feedback
+        feedbacks = [entry.get("feedback", 0.5) for entry in mode_history]
+        feedback_context["average_feedback"] = sum(feedbacks) / len(feedbacks) if feedbacks else 0.5
+        
+        # Calculate positive rate
+        positive_count = sum(1 for f in feedbacks if f > 0.5)
+        feedback_context["positive_rate"] = positive_count / len(feedbacks) if feedbacks else 0.5
+        
+        # Get recent feedback (last 5)
+        recent_feedbacks = feedbacks[-5:]
+        recent_avg = sum(recent_feedbacks) / len(recent_feedbacks) if recent_feedbacks else 0.5
+        
+        # Create adaptation instructions based on feedback patterns
+        adaptation_instructions = []
+        
+        if recent_avg > 0.7:
+            # User likes current content - maintain or slightly enhance
+            if content_type == "quiz":
+                adaptation_instructions.append("User has been enjoying the quiz questions. Maintain similar difficulty and style.")
+            elif content_type == "flashcard":
+                adaptation_instructions.append("User finds flashcards helpful. Keep similar complexity and clarity.")
+            else:
+                adaptation_instructions.append("User enjoys interactive lessons. Maintain similar step-by-step approach.")
+        elif recent_avg < 0.4:
+            # User dislikes current content - adapt significantly
+            if content_type == "quiz":
+                adaptation_instructions.append("User found previous questions challenging. Make questions SIGNIFICANTLY EASIER and more straightforward.")
+                adaptation_instructions.append("Focus on clear, direct questions with concise explanations. Make them more ENGAGING and INTERESTING with practical examples from the source.")
+                adaptation_instructions.append("Prioritize questions that are fun, relatable, and easier to understand.")
+            elif content_type == "flashcard":
+                adaptation_instructions.append("User found previous flashcards difficult. Use MUCH SIMPLER language and more focused concepts.")
+                adaptation_instructions.append("Make flashcards more INTERESTING and ENGAGING with memorable examples and clear connections.")
+                adaptation_instructions.append("Keep concepts bite-sized and easy to remember.")
+            else:
+                adaptation_instructions.append("User found previous interactive content complex. Break down into MUCH SMALLER, CLEARER steps.")
+                adaptation_instructions.append("Make the content MORE INTERESTING and ENGAGING with practical examples, analogies, and real-world connections from the source.")
+                adaptation_instructions.append("Use a conversational, friendly tone. Make each step feel rewarding and easy to complete.")
+        else:
+            # Mixed feedback - balanced approach
+            adaptation_instructions.append("User has mixed feedback. Provide balanced content with clear explanations.")
+        
+        # Add difficulty guidance based on feedback variance
+        if len(recent_feedbacks) > 1:
+            variance = sum((f - recent_avg) ** 2 for f in recent_feedbacks) / len(recent_feedbacks)
+            if variance > 0.1:
+                adaptation_instructions.append("User preferences vary. Provide a mix of difficulty levels.")
+        
+        feedback_context["adaptation_instructions"] = " ".join(adaptation_instructions)
+        
+        self.logger.info(
+            f"Feedback context for {content_type}: "
+            f"avg={feedback_context['average_feedback']:.2f}, "
+            f"positive_rate={feedback_context['positive_rate']:.2f}, "
+            f"count={feedback_context['feedback_count']}"
+        )
+        
+        return feedback_context
 

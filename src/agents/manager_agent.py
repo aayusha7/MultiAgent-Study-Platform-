@@ -18,9 +18,10 @@ class ManagerAgent:
     Uses orchestrator for core logic and OpenAI for reasoning.
     """
     
-    def __init__(self):
+    def __init__(self, username: Optional[str] = None):
         self.logger = logger.get_logger()
-        self.orchestrator = Orchestrator()
+        self.username = username
+        self.orchestrator = Orchestrator(username=username)
         self.openai_client = None
         
         # Initialize OpenAI client if available

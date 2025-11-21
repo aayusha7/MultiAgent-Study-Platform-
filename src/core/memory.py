@@ -2,7 +2,7 @@
 
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -17,6 +17,10 @@ class RLState:
     # Mode history for analysis
     mode_history: List[Dict[str, Any]]  # List of {mode, feedback, timestamp}
     
+    # Performance tracking per chunk/source
+    chunk_performance: Optional[Dict[str, Dict[str, Any]]] = field(default_factory=dict)  # chunk_id -> {correct: int, incorrect: int, attempts: int, last_attempt: str}
+    # Format: {"chunk_0": {"correct": 3, "incorrect": 1, "attempts": 4, "last_attempt": "2025-11-17T..."}, ...}
+    
     # Survey state
     survey_completed: bool = False
     initial_preference: Optional[str] = None  # "quiz", "flashcard", "interactive", or None
@@ -26,14 +30,17 @@ class RLState:
     last_updated: Optional[str] = None
 
 
-def get_state_path() -> Path:
-    """Get path to state file"""
+def get_state_path(username: Optional[str] = None) -> Path:
+    """Get path to state file (user-specific if username provided)"""
+    if username:
+        from .auth import get_user_state_path
+        return get_user_state_path(username)
     return Path(__file__).parent.parent.parent / ".ma_state.json"
 
 
-def load_state() -> RLState:
-    """Load RL state from JSON file"""
-    state_path = get_state_path()
+def load_state(username: Optional[str] = None) -> RLState:
+    """Load RL state from JSON file (user-specific if username provided)"""
+    state_path = get_state_path(username)
     
     if not state_path.exists():
         # Initialize default state
@@ -41,6 +48,7 @@ def load_state() -> RLState:
             mode_alpha={"quiz": 1.0, "flashcard": 1.0, "interactive": 1.0},
             mode_beta={"quiz": 1.0, "flashcard": 1.0, "interactive": 1.0},
             mode_history=[],
+            chunk_performance={},
             survey_completed=False,
             initial_preference=None,
             total_sessions=0,
@@ -59,6 +67,10 @@ def load_state() -> RLState:
             if mode not in data.get("mode_beta", {}):
                 data.setdefault("mode_beta", {})[mode] = 1.0
         
+        # Ensure chunk_performance exists
+        if "chunk_performance" not in data:
+            data["chunk_performance"] = {}
+        
         return RLState(**data)
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         # If file is corrupted, return default state
@@ -66,6 +78,7 @@ def load_state() -> RLState:
             mode_alpha={"quiz": 1.0, "flashcard": 1.0, "interactive": 1.0},
             mode_beta={"quiz": 1.0, "flashcard": 1.0, "interactive": 1.0},
             mode_history=[],
+            chunk_performance={},
             survey_completed=False,
             initial_preference=None,
             total_sessions=0,
@@ -73,9 +86,9 @@ def load_state() -> RLState:
         )
 
 
-def save_state(state: RLState) -> bool:
-    """Save RL state to JSON file"""
-    state_path = get_state_path()
+def save_state(state: RLState, username: Optional[str] = None) -> bool:
+    """Save RL state to JSON file (user-specific if username provided)"""
+    state_path = get_state_path(username)
     
     try:
         # Convert dataclass to dict
@@ -92,17 +105,18 @@ def save_state(state: RLState) -> bool:
         return False
 
 
-def reset_state() -> RLState:
+def reset_state(username: Optional[str] = None) -> RLState:
     """Reset RL state to initial values"""
     state = RLState(
         mode_alpha={"quiz": 1.0, "flashcard": 1.0, "interactive": 1.0},
         mode_beta={"quiz": 1.0, "flashcard": 1.0, "interactive": 1.0},
         mode_history=[],
+        chunk_performance={},
         survey_completed=False,
         initial_preference=None,
         total_sessions=0,
         last_updated=None
     )
-    save_state(state)
+    save_state(state, username)
     return state
 

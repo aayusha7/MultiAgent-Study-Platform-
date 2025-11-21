@@ -40,8 +40,10 @@ ENV/
 logs/
 *.log
 
-# State files (optional - uncomment if you don't want to track user state)
-# .ma_state.json
+# State files (user-specific data)
+.ma_state.json
+.ma_state_*.json
+users.json
 
 # Generated content (optional - uncomment if you don't want to track generated files)
 # generated_content/

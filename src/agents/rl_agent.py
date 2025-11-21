@@ -2,7 +2,7 @@
 
 import numpy as np
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 from ..core.messages import RLUpdateRequest, RLRecommendation
 from ..core.memory import load_state, save_state, RLState
@@ -12,9 +12,10 @@ from ..core.logger import logger
 class RLAgent:
     """Reinforcement Learning agent using Thompson Sampling"""
     
-    def __init__(self):
+    def __init__(self, username: Optional[str] = None):
         self.logger = logger.get_logger()
-        self.state: RLState = load_state()
+        self.username = username
+        self.state: RLState = load_state(username)
         self.modes = ["quiz", "flashcard", "interactive"]
     
     def update_from_feedback(self, request: RLUpdateRequest):
@@ -62,7 +63,7 @@ class RLAgent:
         self.state.last_updated = datetime.now().isoformat()
         
         # Save state
-        save_state(self.state)
+        save_state(self.state, self.username)
         
         self.logger.info(
             f"Updated RL state for {mode}: "
@@ -77,6 +78,9 @@ class RLAgent:
         Returns:
             RLRecommendation with recommended mode and probabilities
         """
+        # Reload state to get latest feedback
+        self.state = load_state(self.username)
+        
         # Sample from Beta distribution for each mode
         samples = {}
         probabilities = {}

@@ -28,11 +28,19 @@ st.set_page_config(
 )
 
 # Initialize session state
-if "manager" not in st.session_state:
-    st.session_state.manager = ManagerAgent()
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+    st.session_state.username = None
+
+if "manager" not in st.session_state or st.session_state.get("username") != st.session_state.get("_last_username"):
+    # Reinitialize manager when username changes
+    username = st.session_state.get("username")
+    st.session_state.manager = ManagerAgent(username=username)
+    st.session_state._last_username = username
     st.session_state.session_id = f"session_{os.urandom(4).hex()}"
     st.session_state.uploaded_file = None
     st.session_state.extracted_chunks = None
+    st.session_state.current_filename = None  # Track current file name
     st.session_state.generated_content = None
     st.session_state.current_mode = None
     st.session_state.feedback_given = False
@@ -46,6 +54,61 @@ theme_css_path = Path(__file__).parent / "theme.css"
 if theme_css_path.exists():
     with open(theme_css_path, 'r') as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+
+def render_login():
+    """Render login/registration page"""
+    st.title("🧠 Learning Platform")
+    st.markdown("### Welcome! Please login or create an account")
+    
+    tab_login, tab_register = st.tabs(["🔐 Login", "📝 Register"])
+    
+    with tab_login:
+        st.markdown("### Login to Your Account")
+        with st.form("login_form"):
+            username = st.text_input("Username", placeholder="Enter your username")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            submit_login = st.form_submit_button("Login", type="primary", use_container_width=True)
+            
+            if submit_login:
+                if username and password:
+                    from src.core.auth import authenticate_user
+                    success, user, message = authenticate_user(username, password)
+                    
+                    if success:
+                        st.session_state.authenticated = True
+                        st.session_state.username = username
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+                else:
+                    st.warning("Please enter both username and password")
+    
+    with tab_register:
+        st.markdown("### Create a New Account")
+        with st.form("register_form"):
+            new_username = st.text_input("Username", placeholder="Choose a username (min 3 characters)", key="reg_username")
+            new_email = st.text_input("Email", placeholder="Enter your email", key="reg_email")
+            new_password = st.text_input("Password", type="password", placeholder="Choose a password (min 6 characters)", key="reg_password")
+            confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password", key="reg_confirm")
+            submit_register = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+            
+            if submit_register:
+                if new_username and new_email and new_password and confirm_password:
+                    if new_password != confirm_password:
+                        st.error("Passwords do not match. Please try again.")
+                    else:
+                        from src.core.auth import register_user
+                        success, message = register_user(new_username, new_email, new_password)
+                        
+                        if success:
+                            st.success(message)
+                            st.info("Please switch to the Login tab to sign in.")
+                        else:
+                            st.error(message)
+                else:
+                    st.warning("Please fill in all fields")
 
 
 def render_survey():
@@ -152,19 +215,41 @@ def render_quiz_content(data: Dict[str, Any]):
             
             # Submit button for this question
             submit_key = f"submit_q_{i}"
+            tracking_key = f"quiz_tracked_{i}"
+            
             if st.button("Submit Answer", key=submit_key):
                 st.session_state.quiz_submitted[i] = True
+                # Track performance immediately on submit (only once)
+                if "source_reference" in q and not st.session_state.get(tracking_key, False):
+                    from src.core.analytics import record_quiz_answer, extract_chunk_id_from_reference
+                    user_selected_idx = shuffled_options.index(st.session_state.quiz_answers[answer_key]) if st.session_state.quiz_answers[answer_key] in shuffled_options else -1
+                    correct_idx = shuffled_data["correct_idx"]
+                    is_correct = user_selected_idx == correct_idx
+                    
+                    source_ref = q.get("source_reference", "")
+                    filename = st.session_state.get("current_filename", "unknown_file")
+                    chunk_id = extract_chunk_id_from_reference(source_ref, filename=filename)
+                    record_quiz_answer(
+                        chunk_id=chunk_id,
+                        source_reference=source_ref,
+                        is_correct=is_correct,
+                        question_text=q.get("question", ""),
+                        username=st.session_state.get("username")
+                    )
+                    st.session_state[tracking_key] = True
                 st.rerun()
             
             # Show result if submitted
             if st.session_state.quiz_submitted.get(i, False):
                 user_selected_idx = shuffled_options.index(st.session_state.quiz_answers[answer_key]) if st.session_state.quiz_answers[answer_key] in shuffled_options else -1
                 correct_idx = shuffled_data["correct_idx"]
+                is_correct = user_selected_idx == correct_idx
                 
-                if user_selected_idx == correct_idx:
-                    st.success("✅ Correct!")
+                # Show result inline without popup notifications
+                if is_correct:
+                    st.markdown("**✅ Correct!**")
                 else:
-                    st.error(f"❌ Incorrect. The correct answer is: **{shuffled_options[correct_idx]}**")
+                    st.markdown(f"**❌ Incorrect.** The correct answer is: **{shuffled_options[correct_idx]}**")
                 
                 if "explanation" in q:
                     with st.expander("💡 Explanation"):
@@ -172,7 +257,7 @@ def render_quiz_content(data: Dict[str, Any]):
                 
                 # Show source reference
                 if "source_reference" in q:
-                    st.info(f"📄 **Source:** {q['source_reference']}")
+                    st.markdown(f"📄 **Source:** {q['source_reference']}")
             else:
                 # Show explanation expander even before submission (optional)
                 if "explanation" in q:
@@ -300,12 +385,34 @@ def render_interactive_content(data: Dict[str, Any]):
     if "checkpoint_responses" not in st.session_state:
         st.session_state.checkpoint_responses = {}
     
+    # Initialize checkpoint submission state
+    if "checkpoint_submitted" not in st.session_state:
+        st.session_state.checkpoint_submitted = {}
+    
+    # Initialize checkpoint correctness state
+    if "checkpoint_correct" not in st.session_state:
+        st.session_state.checkpoint_correct = {}
+    
+    # Initialize stars/rewards count
+    if "interactive_stars" not in st.session_state:
+        st.session_state.interactive_stars = 0
+    
     # Progress bar
     progress = (st.session_state.current_step + 1) / len(steps)
     st.progress(progress, text=f"Progress: Step {st.session_state.current_step + 1} of {len(steps)}")
     
-    # Title
-    st.markdown(f"# 🎯 {title}")
+    # Title with stars display
+    col_title, col_stars = st.columns([3, 1])
+    with col_title:
+        st.markdown(f"# 🎯 {title}")
+    with col_stars:
+        stars_display = "⭐" * min(5, st.session_state.interactive_stars)
+        st.markdown(f"""
+        <div style="text-align: right; padding: 10px;">
+            <div style="font-size: 20px; color: #ffd700;">{stars_display}</div>
+            <div style="font-size: 12px; color: #666;">Total: {st.session_state.interactive_stars} stars</div>
+        </div>
+        """, unsafe_allow_html=True)
     st.divider()
     
     if st.session_state.current_step < len(steps):
@@ -340,49 +447,111 @@ def render_interactive_content(data: Dict[str, Any]):
             st.info(step["checkpoint"])
             
             checkpoint_key = f"checkpoint_{st.session_state.current_step}"
+            is_submitted = st.session_state.checkpoint_submitted.get(checkpoint_key, False)
+            is_correct = st.session_state.checkpoint_correct.get(checkpoint_key, False)
+            
             checkpoint_response = st.text_area(
                 "📝 Your response:",
                 key=checkpoint_key,
                 height=150,
                 placeholder="Type your thoughts, answer, or reflection here...",
-                help="Take a moment to reflect on what you've learned"
+                help="Take a moment to reflect on what you've learned",
+                disabled=is_submitted  # Disable after submission
             )
             
             # Save response
-            if checkpoint_response:
+            if checkpoint_response and not is_submitted:
                 st.session_state.checkpoint_responses[checkpoint_key] = checkpoint_response
-                st.success("✅ Response saved! Great thinking!")
-            elif checkpoint_key in st.session_state.checkpoint_responses:
-                st.info(f"💭 Your previous response: {st.session_state.checkpoint_responses[checkpoint_key][:100]}...")
             
-            # Show answer/solution if available
-            if "checkpoint_answer" in step and step.get("checkpoint_answer"):
-                show_answer_key = f"show_answer_{st.session_state.current_step}"
-                if show_answer_key not in st.session_state:
-                    st.session_state[show_answer_key] = False
-                
-                # Toggle button
-                button_text = "🙈 Hide Answer" if st.session_state[show_answer_key] else "💡 Show Answer"
-                if st.button(button_text, key=f"toggle_answer_{st.session_state.current_step}", use_container_width=False):
-                    st.session_state[show_answer_key] = not st.session_state[show_answer_key]
+            # Submit button
+            if not is_submitted:
+                tracking_key = f"interactive_tracked_{st.session_state.current_step}"
+                if st.button("📤 Submit Answer", key=f"submit_checkpoint_{st.session_state.current_step}", 
+                           type="primary", use_container_width=True, disabled=not checkpoint_response.strip()):
+                    # Check if answer is correct
+                    user_answer = checkpoint_response.strip().lower()
+                    correct_answer = step.get("checkpoint_answer", "").strip().lower()
+                    
+                    # Simple similarity check (can be improved with semantic similarity)
+                    # Check if key concepts from correct answer are in user answer
+                    correct_words = set(correct_answer.split())
+                    user_words = set(user_answer.split())
+                    
+                    # Calculate similarity (at least 30% of key words should match)
+                    if len(correct_words) > 0:
+                        similarity = len(correct_words.intersection(user_words)) / len(correct_words)
+                        is_correct = similarity >= 0.3 or user_answer in correct_answer or correct_answer in user_answer
+                    else:
+                        is_correct = False
+                    
+                    # Mark as submitted
+                    st.session_state.checkpoint_submitted[checkpoint_key] = True
+                    st.session_state.checkpoint_correct[checkpoint_key] = is_correct
+                    
+                    # Track performance for analytics (only once per submission)
+                    if "source_reference" in step and not st.session_state.get(tracking_key, False):
+                        from src.core.analytics import record_quiz_answer, extract_chunk_id_from_reference
+                        source_ref = step.get("source_reference", "")
+                        filename = st.session_state.get("current_filename", "unknown_file")
+                        chunk_id = extract_chunk_id_from_reference(source_ref, filename=filename)
+                        record_quiz_answer(
+                            chunk_id=chunk_id,
+                            source_reference=source_ref,
+                            is_correct=is_correct,
+                            question_text=f"Interactive Checkpoint: {step.get('checkpoint', '')[:50]}",
+                            username=st.session_state.get("username")
+                        )
+                        st.session_state[tracking_key] = True
+                    
+                    # Award stars if correct
+                    if is_correct:
+                        st.session_state.interactive_stars += 1
+                    
                     st.rerun()
-                
-                # Display answer if toggled on
-                if st.session_state.get(show_answer_key, False):
-                    st.markdown("---")
-                    st.markdown("### 💡 Model Answer")
-                    answer_text = html.escape(step["checkpoint_answer"])
+            
+            # Show result after submission
+            if is_submitted:
+                if is_correct:
+                    # Show rewards/stars for correct answer
+                    stars_earned = "⭐" * min(3, st.session_state.interactive_stars)
                     st.markdown(f"""
-                    <div style="background-color: #ffffff; 
-                                color: #000000;
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                                 padding: 20px; 
-                                border-radius: 8px; 
-                                border-left: 4px solid #667eea;
-                                margin-top: 10px;
-                                box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <p style="color: #000000; margin: 0;">{answer_text}</p>
+                                border-radius: 10px; 
+                                color: white; 
+                                text-align: center;
+                                margin: 20px 0;">
+                        <h2 style="color: white; margin: 0;">🎉 Correct! Well done!</h2>
+                        <p style="color: white; font-size: 24px; margin: 10px 0;">{stars_earned}</p>
+                        <p style="color: white; margin: 0;">You've earned a star! Total stars: {st.session_state.interactive_stars} ⭐</p>
                     </div>
                     """, unsafe_allow_html=True)
+                    st.success("✅ Great job! Keep it up!")
+                else:
+                    # Show correct answer if wrong
+                    st.error("❌ Not quite right. Here's the correct answer:")
+                    answer_text = html.escape(step.get("checkpoint_answer", "No answer provided"))
+                    st.markdown(f"""
+                    <div style="background-color: #fff3cd; 
+                                color: #856404;
+                                padding: 20px; 
+                                border-radius: 8px; 
+                                border-left: 4px solid #ffc107;
+                                margin-top: 10px;
+                                box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <h4 style="color: #856404; margin-top: 0;">💡 Correct Answer:</h4>
+                        <p style="color: #856404; margin: 0;">{answer_text}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Show user's answer for comparison
+                    user_answer_display = html.escape(st.session_state.checkpoint_responses.get(checkpoint_key, ""))
+                    if user_answer_display:
+                        st.info(f"📝 Your answer: {user_answer_display}")
+            
+            # Show previous response if exists and not submitted
+            elif checkpoint_key in st.session_state.checkpoint_responses:
+                st.info(f"💭 Your previous response: {st.session_state.checkpoint_responses[checkpoint_key][:100]}...")
         
         st.divider()
         
@@ -414,10 +583,109 @@ def render_interactive_content(data: Dict[str, Any]):
         
         # Show completion message if on last step
         if st.session_state.current_step == len(steps) - 1:
-            st.balloons()
-            st.success("🎉 Congratulations! You've completed the interactive lesson!")
+            st.markdown("### 🎉 Congratulations! You've completed the interactive lesson!")
     
     return len(steps)
+
+
+def render_performance_heatmap(all_perf: Dict[str, Dict[str, Any]]):
+    """Render a heatmap showing performance per chunk"""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        st.warning("Plotly not installed. Install with: pip install plotly")
+        # Fallback to simple text display
+        st.write("**Performance by Area:**")
+        for chunk_id, perf in sorted(all_perf.items()):
+            if perf["attempts"] > 0:
+                accuracy_color = "🟢" if perf["accuracy"] >= 80 else "🟡" if perf["accuracy"] >= 60 else "🔴"
+                st.write(f"{accuracy_color} {perf.get('source_reference', chunk_id)[:50]}: {perf['accuracy']:.1f}% ({perf['attempts']} attempts)")
+        return
+    
+    if not all_perf:
+        st.info("No performance data available yet.")
+        return
+    
+    # Prepare data for heatmap
+    chunk_ids = []
+    accuracies = []
+    attempts = []
+    labels = []
+    
+    for chunk_id, perf in sorted(all_perf.items()):
+        if perf["attempts"] > 0:
+            chunk_ids.append(chunk_id)
+            accuracies.append(perf["accuracy"])
+            attempts.append(perf["attempts"])
+            # Create label with chunk info
+            ref = perf.get("source_reference", chunk_id)
+            labels.append(f"{ref[:30]}...\n{perf['accuracy']:.0f}% ({perf['attempts']} attempts)")
+    
+    if not chunk_ids:
+        st.info("No performance data available yet.")
+        return
+    
+    # Create heatmap using plotly
+    fig = go.Figure(data=go.Heatmap(
+        z=[accuracies],  # Single row heatmap
+        x=chunk_ids,
+        y=["Performance"],
+        colorscale=[
+            [0, '#d73027'],      # Red for low (0%)
+            [0.5, '#fee08b'],    # Yellow for medium (50%)
+            [1, '#1a9850']       # Green for high (100%)
+        ],
+        text=[[f"{acc:.1f}%" for acc in accuracies]],
+        texttemplate="%{text}",
+        textfont={"size": 10},
+        colorbar=dict(title="Accuracy %"),
+        hovertemplate='<b>%{x}</b><br>Accuracy: %{z:.1f}%<br>Attempts: %{customdata[0]}<extra></extra>',
+        customdata=[[attempts]]
+    ))
+    
+    fig.update_layout(
+        title="Performance Heatmap by Content Area",
+        xaxis_title="Content Areas",
+        yaxis_title="",
+        height=200,
+        xaxis=dict(tickangle=-45, tickmode='array', tickvals=chunk_ids, ticktext=[l.split('\n')[0] for l in labels]),
+        margin=dict(l=20, r=20, t=50, b=100)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Also show a bar chart for better readability
+    st.subheader("📊 Performance by Area")
+    fig2 = go.Figure(data=[
+        go.Bar(
+            x=[l.split('\n')[0] for l in labels],
+            y=accuracies,
+            marker=dict(
+                color=accuracies,
+                colorscale=[
+                    [0, '#d73027'],      # Red
+                    [0.5, '#fee08b'],    # Yellow
+                    [1, '#1a9850']       # Green
+                ],
+                showscale=True,
+                colorbar=dict(title="Accuracy %")
+            ),
+            text=[f"{acc:.1f}%" for acc in accuracies],
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>Accuracy: %{y:.1f}%<br>Attempts: %{customdata}<extra></extra>',
+            customdata=attempts
+        )
+    ])
+    
+    fig2.update_layout(
+        xaxis_title="Content Areas",
+        yaxis_title="Accuracy (%)",
+        height=400,
+        xaxis=dict(tickangle=-45),
+        margin=dict(b=100)
+    )
+    
+    st.plotly_chart(fig2, use_container_width=True)
 
 
 def render_feedback_buttons(mode: str):
@@ -461,12 +729,31 @@ def give_feedback(mode: str, feedback: float):
 def main():
     """Main application"""
     
+    # Check authentication
+    if not st.session_state.authenticated:
+        render_login()
+        return
+    
     # Sidebar
     with st.sidebar:
+        # User info and logout
+        st.markdown(f"### 👤 {st.session_state.username}")
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            # Clear all session data including _last_username to force reinit on next login
+            for key in list(st.session_state.keys()):
+                if key not in ['authenticated', 'username']:
+                    del st.session_state[key]
+            # Explicitly clear _last_username to ensure ManagerAgent reinitializes
+            if '_last_username' in st.session_state:
+                del st.session_state['_last_username']
+            st.rerun()
+        st.divider()
         st.title("🧠 Learning Platform")
         
         # Check survey status
-        state = load_state()
+        state = load_state(st.session_state.username)
         survey_completed = state.survey_completed
         
         if not survey_completed:
@@ -534,14 +821,20 @@ def main():
                         # Filter out empty chunks
                         extracted_chunks = [chunk for chunk in extracted_chunks if chunk and chunk.strip()]
                         st.session_state.extracted_chunks = extracted_chunks
-                        st.success(f"✅ Extracted {len(st.session_state.extracted_chunks)} chunks")
+                        st.session_state.current_filename = uploaded_file.name  # Store filename
+                        st.success(f"✅ Extracted {len(st.session_state.extracted_chunks)} chunks from {uploaded_file.name}")
                         
                         if not st.session_state.extracted_chunks:
                             st.error("⚠️ No valid content chunks extracted. Please try a different file.")
                         else:
                             # Auto-generate content based on preference
-                            if survey_completed and preference != LearningMode.UNKNOWN.value:
-                                generate_content_for_mode(preference)
+                            if survey_completed:
+                                # If preference is "I don't know", always show mixed bundle
+                                if preference == LearningMode.UNKNOWN.value:
+                                    generate_mixed_bundle()
+                                else:
+                                    # For specific preferences, use that mode
+                                    generate_content_for_mode(preference)
                             else:
                                 generate_mixed_bundle()
                     else:
@@ -564,8 +857,14 @@ def main():
                 st.success("✅ Preferences reset!")
                 st.rerun()
         
+        # Analytics Dashboard link in sidebar
+        st.markdown("---")
+        if st.button("📊 View Analytics Dashboard", use_container_width=True):
+            st.session_state.show_analytics = True
+            st.rerun()
+        
         # Show logs
-        with st.expander("📊 View Logs"):
+        with st.expander("📋 View Logs"):
             logs = logger.get_streamlit_logs()
             if logs:
                 st.text("\n".join(logs[-20:]))  # Last 20 logs
@@ -574,7 +873,162 @@ def main():
 
 
     # Main area
-    if not survey_completed:
+    # Check if user wants to see analytics
+    if st.session_state.get("show_analytics", False):
+        # Analytics Dashboard - Full Page
+        st.title("📊 Analytics & Progress Dashboard")
+        
+        from src.core.analytics import (
+            get_performance_summary,
+            get_weak_areas,
+            get_strong_areas,
+            get_all_chunk_performance
+        )
+        
+        # Ensure username is available (should always be set if authenticated)
+        username = st.session_state.get("username")
+        if not username:
+            st.error("❌ Username not found. Please log out and log back in.")
+            if st.button("← Back to Learning", type="primary"):
+                st.session_state.show_analytics = False
+                st.rerun()
+            return
+        
+        # Verify state file exists and can be loaded
+        from src.core.memory import get_state_path
+        state_path = get_state_path(username)
+        if not state_path.exists():
+            st.warning(f"⚠️ No state file found for user '{username}'. Your analytics data will appear once you start answering questions.")
+        else:
+            # Try to load state to verify it's accessible
+            try:
+                test_state = load_state(username)
+                if not hasattr(test_state, 'chunk_performance') or not test_state.chunk_performance:
+                    st.info("ℹ️ No analytics data recorded yet. Start answering questions to see your progress!")
+            except Exception as e:
+                st.error(f"❌ Error loading state: {e}")
+        
+        summary = get_performance_summary(username)
+        
+        if st.button("← Back to Learning", type="primary"):
+            st.session_state.show_analytics = False
+            st.rerun()
+        
+        st.divider()
+        
+        if summary["total_attempts"] > 0:
+            st.header("📈 Overall Performance")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Overall Accuracy", f"{summary['overall_accuracy']:.1f}%")
+            with col2:
+                st.metric("Total Questions", summary["total_attempts"])
+            with col3:
+                st.metric("Correct", summary["total_correct"])
+            with col4:
+                st.metric("Areas Tested", summary["chunks_with_data"])
+            
+            st.divider()
+            
+            # Heatmap
+            st.header("🔥 Performance Heatmap")
+            all_perf = get_all_chunk_performance(username)
+            if all_perf:
+                render_performance_heatmap(all_perf)
+            else:
+                st.info("No performance data available yet.")
+            
+            st.divider()
+            
+            # Performance by Area
+            st.header("📊 Performance by Area")
+            if all_perf:
+                # Group by file if possible (chunk IDs with file hash prefix)
+                for chunk_id, perf in sorted(all_perf.items()):
+                    accuracy = perf.get("accuracy", 0.0)
+                    attempts = perf.get("attempts", 0)
+                    source_ref = perf.get("source_reference", chunk_id)
+                    
+                    # Extract file info from chunk_id if it has file hash
+                    file_info = ""
+                    if "_chunk_" in chunk_id:
+                        # Try to show which file this came from
+                        file_hash = chunk_id.split("_chunk_")[0]
+                        file_info = f" [File: {file_hash[:8]}...]"
+                    
+                    # Color code based on performance
+                    if accuracy >= 80:
+                        emoji = "🟢"
+                        color = "green"
+                    elif accuracy >= 60:
+                        emoji = "🟡"
+                        color = "orange"
+                    else:
+                        emoji = "🔴"
+                        color = "red"
+                    
+                    display_text = f"{emoji} {source_ref[:60]}{file_info} - {accuracy:.1f}% ({attempts} questions)"
+                    with st.expander(display_text):
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Accuracy", f"{accuracy:.1f}%")
+                        with col2:
+                            st.metric("Questions", attempts)
+                        with col3:
+                            st.metric("Correct", perf.get("correct", 0))
+                        st.write(f"**Incorrect:** {perf.get('incorrect', 0)}")
+                        st.write(f"**Chunk ID:** {chunk_id}")
+                        if perf.get("last_attempt"):
+                            st.write(f"**Last Attempt:** {perf['last_attempt']}")
+            
+            st.divider()
+            
+            # Weak Areas
+            st.header("⚠️ Weak Areas (Need Improvement)")
+            weak_areas = get_weak_areas(threshold=60.0, min_attempts=2, username=username)
+            if weak_areas:
+                for area in weak_areas[:10]:  # Show top 10 weakest
+                    with st.expander(f"🔴 {area['source_reference'][:80]} - {area['accuracy']:.1f}% accuracy"):
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Accuracy", f"{area['accuracy']:.1f}%")
+                        with col2:
+                            st.metric("Questions", area['attempts'])
+                        with col3:
+                            st.metric("Correct", area['correct'])
+                        st.write(f"**Incorrect:** {area['incorrect']}")
+                        if area.get('last_attempt'):
+                            st.write(f"**Last Attempt:** {area['last_attempt']}")
+            else:
+                st.info("No weak areas identified yet. Keep practicing!")
+            
+            st.divider()
+            
+            # Strong Areas
+            st.header("✅ Strong Areas (Mastered)")
+            strong_areas = get_strong_areas(threshold=80.0, min_attempts=2, username=username)
+            if strong_areas:
+                for area in strong_areas[:10]:  # Show top 10 strongest
+                    with st.expander(f"🟢 {area['source_reference'][:80]} - {area['accuracy']:.1f}% accuracy"):
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Accuracy", f"{area['accuracy']:.1f}%")
+                        with col2:
+                            st.metric("Questions", area['attempts'])
+                        with col3:
+                            st.metric("Correct", area['correct'])
+                        st.write(f"**Incorrect:** {area['incorrect']}")
+                        if area.get('last_attempt'):
+                            st.write(f"**Last Attempt:** {area['last_attempt']}")
+            else:
+                st.info("No strong areas identified yet. Keep practicing!")
+        else:
+            st.info("📝 Complete some quizzes to see your progress and analytics!")
+            if st.button("← Back to Learning"):
+                st.session_state.show_analytics = False
+                st.rerun()
+    
+    elif not survey_completed:
         render_survey()
     else:
         if st.session_state.extracted_chunks is None:
@@ -592,21 +1046,27 @@ def main():
                 
                 with tab_quiz:
                     quiz_data = content.get("data", {}).get("quiz", {})
-                    if quiz_data:
+                    if quiz_data and quiz_data.get("questions"):
                         render_quiz_content(quiz_data)
                         render_feedback_buttons("quiz")
+                    else:
+                        st.info("📝 Quiz content will be generated here. Try generating quiz content specifically or wait for it to be included in the mixed bundle.")
                 
                 with tab_flash:
                     flashcard_data = content.get("data", {}).get("flashcards", {})
-                    if flashcard_data:
+                    if flashcard_data and flashcard_data.get("cards"):
                         render_flashcard_content(flashcard_data)
                         render_feedback_buttons("flashcard")
+                    else:
+                        st.info("🃏 Flashcard content will be generated here. Try generating flashcard content specifically or wait for it to be included in the mixed bundle.")
                 
                 with tab_inter:
                     interactive_data = content.get("data", {}).get("interactive", {})
-                    if interactive_data:
+                    if interactive_data and interactive_data.get("steps"):
                         render_interactive_content(interactive_data)
                         render_feedback_buttons("interactive")
+                    else:
+                        st.info("🎯 Interactive content will be generated here. Try generating interactive content specifically or wait for it to be included in the mixed bundle.")
             
             elif content_type == ContentType.QUIZ.value:
                 render_quiz_content(content.get("data", {}))
@@ -661,6 +1121,13 @@ def generate_content_for_mode(mode: str):
                 st.session_state.current_step = 0
             if "checkpoint_responses" in st.session_state:
                 st.session_state.checkpoint_responses = {}
+            if "checkpoint_submitted" in st.session_state:
+                st.session_state.checkpoint_submitted = {}
+            if "checkpoint_correct" in st.session_state:
+                st.session_state.checkpoint_correct = {}
+            # Reset stars when starting new content (optional - comment out if you want stars to persist)
+            # if "interactive_stars" in st.session_state:
+            #     st.session_state.interactive_stars = 0
             
             st.session_state.generated_content = result
             st.session_state.current_mode = mode
@@ -709,6 +1176,13 @@ def generate_mixed_bundle():
                 st.session_state.current_step = 0
             if "checkpoint_responses" in st.session_state:
                 st.session_state.checkpoint_responses = {}
+            if "checkpoint_submitted" in st.session_state:
+                st.session_state.checkpoint_submitted = {}
+            if "checkpoint_correct" in st.session_state:
+                st.session_state.checkpoint_correct = {}
+            # Reset stars when starting new content (optional - comment out if you want stars to persist)
+            # if "interactive_stars" in st.session_state:
+            #     st.session_state.interactive_stars = 0
             
             st.session_state.generated_content = result
             st.session_state.current_mode = "mixed"
