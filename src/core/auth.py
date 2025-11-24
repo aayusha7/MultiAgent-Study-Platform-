@@ -31,7 +31,28 @@ def hash_password(password: str) -> str:
 
 
 def load_users() -> Dict[str, User]:
-    """Load all users from database"""
+    """Load all users - tries Supabase first, falls back to JSON file"""
+    # Try Supabase first
+    try:
+        from .supabase_client import get_all_users_supabase
+        supabase_users = get_all_users_supabase()
+        if supabase_users:
+            users = {}
+            for username, user_data in supabase_users.items():
+                # Convert Supabase format to User dataclass
+                users[username] = User(
+                    username=user_data.get("username", username),
+                    email=user_data.get("email", ""),
+                    password_hash=user_data.get("password_hash", ""),
+                    created_at=user_data.get("created_at", datetime.now().isoformat()),
+                    last_login=user_data.get("last_login")
+                )
+            if users:
+                return users
+    except Exception as e:
+        logger.get_logger().debug(f"Supabase not available, using file storage: {e}")
+    
+    # Fallback to JSON file
     users_path = get_users_db_path()
     
     if not users_path.exists():
@@ -69,7 +90,18 @@ def load_users() -> Dict[str, User]:
 
 
 def save_users(users: Dict[str, User]) -> bool:
-    """Save users to database"""
+    """Save users - tries Supabase first, falls back to JSON file"""
+    # Try Supabase first (save each user)
+    supabase_success = False
+    try:
+        from .supabase_client import save_user_supabase
+        for username, user in users.items():
+            if save_user_supabase(username, user.password_hash, user.email):
+                supabase_success = True
+    except Exception as e:
+        logger.get_logger().debug(f"Supabase not available, using file storage: {e}")
+    
+    # Always save to file as backup
     users_path = get_users_db_path()
     
     try:
@@ -128,6 +160,14 @@ def register_user(username: str, email: str, password: str) -> tuple[bool, str]:
     )
     
     users[username] = new_user
+    
+    # Try Supabase first
+    try:
+        from .supabase_client import save_user_supabase
+        if save_user_supabase(username, new_user.password_hash, new_user.email):
+            logger.get_logger().info(f"User registered in Supabase: {username}")
+    except Exception as e:
+        logger.get_logger().debug(f"Supabase not available: {e}")
     
     if save_users(users):
         logger.get_logger().info(f"User registered: {username}")

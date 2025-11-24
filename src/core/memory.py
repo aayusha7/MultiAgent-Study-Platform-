@@ -42,9 +42,35 @@ def get_state_path(username: Optional[str] = None) -> Path:
 
 
 def load_state(username: Optional[str] = None) -> RLState:
-    """Load RL state - tries database first, falls back to JSON file"""
-    # Try database first (if available)
+    """Load RL state - tries Supabase first, then SQLite, then JSON file"""
+    # Try Supabase first (if available and username provided)
     if username:
+        try:
+            from .supabase_client import load_rl_state_supabase
+            supabase_state = load_rl_state_supabase(username)
+            if supabase_state:
+                # Ensure all modes are present
+                modes = ["quiz", "flashcard", "interactive"]
+                for mode in modes:
+                    if mode not in supabase_state.get("mode_alpha", {}):
+                        supabase_state.setdefault("mode_alpha", {})[mode] = 1.0
+                    if mode not in supabase_state.get("mode_beta", {}):
+                        supabase_state.setdefault("mode_beta", {})[mode] = 1.0
+                
+                # Ensure chunk_performance exists
+                if "chunk_performance" not in supabase_state:
+                    supabase_state["chunk_performance"] = {}
+                
+                # Ensure file_mapping exists
+                if "file_mapping" not in supabase_state:
+                    supabase_state["file_mapping"] = {}
+                
+                return RLState(**supabase_state)
+        except Exception as e:
+            from .logger import logger
+            logger.get_logger().debug(f"Supabase not available, trying other storage: {e}")
+        
+        # Try SQLite database (if available)
         try:
             from .database import load_rl_state
             db_state = load_rl_state(username)
@@ -126,9 +152,19 @@ def load_state(username: Optional[str] = None) -> RLState:
 
 
 def save_state(state: RLState, username: Optional[str] = None) -> bool:
-    """Save RL state - tries database first, falls back to JSON file"""
-    # Try database first (if available and username provided)
+    """Save RL state - tries Supabase first, then SQLite, then JSON file"""
+    # Try Supabase first (if available and username provided)
     if username:
+        try:
+            from .supabase_client import save_rl_state_supabase
+            data = asdict(state)
+            if save_rl_state_supabase(username, data):
+                return True
+        except Exception as e:
+            from .logger import logger
+            logger.get_logger().debug(f"Supabase not available, trying other storage: {e}")
+        
+        # Try SQLite database (if available)
         try:
             from .database import save_rl_state
             data = asdict(state)
