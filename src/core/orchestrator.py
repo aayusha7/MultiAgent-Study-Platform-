@@ -5,236 +5,237 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from .messages import (
-  ExtractionRequest, ExtractionResponse,
-  GenerationRequest, GenerationResponse,
-  RLUpdateRequest, RLRecommendation,
-  ManagerCommand, ContentType, LearningMode
+    ExtractionRequest, ExtractionResponse,
+    GenerationRequest, GenerationResponse,
+    RLUpdateRequest, RLRecommendation,
+    ManagerCommand, ContentType, LearningMode
 )
 from .memory import load_state, save_state, reset_state, RLState
 from .logger import logger
 
 
 class ManagerAgent:
-  """Orchestrates all agents and manages workflow"""
+    """Orchestrates all agents and manages workflow"""
     
-  def __init__(self, username: Optional[str] = None):
-    self.logger = logger.get_logger()
-    self.session_context: Dict[str, Any] = {}
-    self.username = username
-    self.state: RLState = load_state(username)
-
-  def handle_command(self, command: ManagerCommand) -> Dict[str, Any]:
-    """Handle a manager command synchronously"""
-    try:
-      # Add session_id to params if provided
-      params = command.params.copy() if command.params else {}
-      if command.session_id:
-        params["session_id"] = command.session_id
-      
-      if command.action == "extract":
-        return self._handle_extract(params)
-      elif command.action == "generate":
-        return self._handle_generate(params)
-      elif command.action == "update_rl":
-        return self._handle_update_rl(params)
-      elif command.action == "recommend":
-        return self._handle_recommend(params)
-      elif command.action == "survey":
-        return self._handle_survey(params)
-      elif command.action == "reset_preferences":
-        return self._handle_reset_preferences()
-      else:
-        return {"success": False, "error": f"Unknown action: {command.action}"}
-    except Exception as e:
-      self.logger.exception(f"Error handling command {command.action}")
-      return {"success": False, "error": str(e)}
-
+    def __init__(self, username: Optional[str] = None):
+        self.logger = logger.get_logger()
+        self.session_context: Dict[str, Any] = {}
+        self.username = username
+        self.state: RLState = load_state(username)
+    
+    def handle_command(self, command: ManagerCommand) -> Dict[str, Any]:
+        """Handle a manager command synchronously"""
+        try:
+            # Add session_id to params if provided
+            params = command.params.copy() if command.params else {}
+            if command.session_id:
+                params["session_id"] = command.session_id
+            
+            if command.action == "extract":
+                return self._handle_extract(params)
+            elif command.action == "generate":
+                return self._handle_generate(params)
+            elif command.action == "update_rl":
+                return self._handle_update_rl(params)
+            elif command.action == "recommend":
+                return self._handle_recommend(params)
+            elif command.action == "survey":
+                return self._handle_survey(params)
+            elif command.action == "reset_preferences":
+                return self._handle_reset_preferences()
+            else:
+                return {"success": False, "error": f"Unknown action: {command.action}"}
+        except Exception as e:
+            self.logger.exception(f"Error handling command {command.action}")
+            return {"success": False, "error": str(e)}
+    
     async def handle_command_async(self, command: ManagerCommand) -> Dict[str, Any]:
-      """Handle a manager command asynchronously (for parallel agent calls)"""
-      # Future enhancement: use asyncio.gather for parallel operations
-      return self.handle_command(command)
+        """Handle a manager command asynchronously (for parallel agent calls)"""
+        # Future enhancement: use asyncio.gather for parallel operations
+        return self.handle_command(command)
     
     def _handle_extract(self, params: Dict[str, Any]) -> Dict[str, Any]:
-      """Route extraction request to NLP Agent"""
-      from ..agents.nlp_agent import NLPAgent
-      
-      nlp_agent = NLPAgent()
-      # Remove session_id from params as ExtractionRequest doesn't accept it
-      extract_params = {k: v for k, v in params.items() if k in ['file_path', 'file_content', 'file_type']}
-      request = ExtractionRequest(**extract_params)
-      response = nlp_agent.extract(request)
-      
-      # Store in session context
-      session_id = params.get("session_id")
-      self.logger.info(f"Extract handler - session_id: {session_id}, chunks count: {len(response.chunks) if response.chunks else 0}")
-      
-      if session_id:
-          self.session_context[session_id] = {
-              "chunks": response.chunks,
-              "summary": response.summary
-          }
-          self.logger.info(f"Stored {len(response.chunks)} chunks in session {session_id} (total {sum(len(c) for c in response.chunks)} chars)")
-          self.logger.info(f"Session context keys: {list(self.session_context.keys())}")
-      else:
-          self.logger.warning("No session_id provided in extract params, chunks will not be stored in session context")
-      
-      return {
-          "success": response.success,
-          "chunks": response.chunks,
-          "summary": response.summary,
-          "error": response.error
-      }
-
-    def _handle_generate(self, params: Dict[str, Any]) -> Dict[str, Any]:
-      """Route generation request to LLM Agent"""
-      from ..agents.llm_agent import LLMAgent
-      
-      llm_agent = LLMAgent()
-      
-      # Determine content type
-      content_type_str = params.get("content_type", "quiz")
-      content_type = ContentType(content_type_str)
-      
-      # Get chunks from session or params
-      chunks = params.get("chunks", [])
-      session_id = params.get("session_id")
-      
-      if not chunks and session_id:
-        self.logger.info(f"Generate handler - session_id: {session_id}")
-        self.logger.info(f"Available session context keys: {list(self.session_context.keys())}")
-        session_data = self.session_context.get(session_id, {})
-        chunks = session_data.get("chunks", [])
-        self.logger.info(f"Retrieved {len(chunks)} chunks from session {session_id}")
-        if chunks:
-            self.logger.info(f"First chunk preview: {chunks[0][:100]}...")
-      
-      # Fallback: if still no chunks, try to get from params (in case UI passed them directly)
-      if not chunks:
-        # Check if chunks were passed in params but with a different key
-        if "extracted_chunks" in params:
-            chunks = params.get("extracted_chunks", [])
-            self.logger.info(f"Retrieved {len(chunks)} chunks from params.extracted_chunks")
-      
-      # Filter out empty chunks
-      if chunks:
-        chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
-        self.logger.info(f"After filtering empty chunks: {len(chunks)} chunks remaining")
-    
-      # Validate chunks are present and non-empty
-      if not chunks:
-        error_msg = "No content chunks available. Please extract text from a file first."
-        self.logger.error(error_msg)
-        return {
-            "success": False,
-            "content_type": content_type.value,
-            "data": {},
-            "error": error_msg
-        }
-      
-      # Filter out empty chunks
-      chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
-      
-      if not chunks:
-        error_msg = "All extracted chunks are empty. PDF extraction may have failed."
-        self.logger.error(error_msg)
-        return {
-            "success": False,
-            "content_type": content_type.value,
-            "data": {},
-            "error": error_msg
-        }
-      
-      self.logger.info(f"Generating {content_type.value} with {len(chunks)} chunks (total {sum(len(c) for c in chunks)} chars)")
-      
-      # Reload state to get latest feedback before generating context
-      self.state = load_state(self.username)
-      
-      # Get feedback context for content adaptation
-      # For mixed bundle, get context for all types and calculate adaptive quantities
-      if content_type == ContentType.MIXED:
-        quiz_fc = self._get_feedback_context("quiz")
-        flashcard_fc = self._get_feedback_context("flashcard")
-        interactive_fc = self._get_feedback_context("interactive")
+        """Route extraction request to NLP Agent"""
+        from ..agents.nlp_agent import NLPAgent
         
-        feedback_context = {
-            "quiz": quiz_fc,
-            "flashcard": flashcard_fc,
-            "interactive": interactive_fc
-        }
+        nlp_agent = NLPAgent()
+        # Remove session_id from params as ExtractionRequest doesn't accept it
+        extract_params = {k: v for k, v in params.items() if k in ['file_path', 'file_content', 'file_type']}
+        request = ExtractionRequest(**extract_params)
+        response = nlp_agent.extract(request)
         
-        # Calculate adaptive quantities for each type in mixed bundle
-        # Store in params so LLM agent can use them
-        base_quiz = self._calculate_item_count(ContentType.QUIZ, len(chunks))
-        base_flashcard = self._calculate_item_count(ContentType.FLASHCARD, len(chunks))
-        base_interactive = self._calculate_item_count(ContentType.INTERACTIVE, len(chunks))
+        # Store in session context
+        session_id = params.get("session_id")
+        self.logger.info(f"Extract handler - session_id: {session_id}, chunks count: {len(response.chunks) if response.chunks else 0}")
         
-        self.logger.info(f"Base counts for {len(chunks)} chunks: quiz={base_quiz}, flashcard={base_flashcard}, interactive={base_interactive}")
-        
-        # Adjust based on feedback
-        quiz_count = self._calculate_adaptive_count(base_quiz, quiz_fc, "quiz")
-        flashcard_count = self._calculate_adaptive_count(base_flashcard, flashcard_fc, "flashcard")
-        interactive_count = self._calculate_adaptive_count(base_interactive, interactive_fc, "interactive")
-        
-        if quiz_count != base_quiz:
-            self.logger.info(f"Quiz count adjusted from {base_quiz} to {quiz_count} based on feedback")
-        
-        # Store in feedback_context for LLM agent to use
-        feedback_context["quiz"]["adaptive_count"] = quiz_count
-        feedback_context["flashcard"]["adaptive_count"] = flashcard_count
-        feedback_context["interactive"]["adaptive_count"] = interactive_count
-      else:
-        feedback_context = self._get_feedback_context(content_type_str)
-      
-      # Calculate dynamic item count based on chunks AND feedback
-      # For MIXED, num_items is not used (each type has its own adaptive count)
-      num_items = params.get("num_items")
-      if content_type != ContentType.MIXED:
-        if num_items is None:
-          base_count = self._calculate_item_count(content_type, len(chunks))
-          # Adjust quantity based on feedback
-            if feedback_context.get("has_feedback"):
-                avg_feedback = feedback_context.get("average_feedback", 0.5)
-                if avg_feedback < 0.4:  # Disliked content
-                    # Reduce by 40-60% for disliked content
-                    reduction_factor = 0.4 + (avg_feedback * 0.4)  # 0.4 to 0.56 range
-                    num_items = max(2, int(base_count * reduction_factor))
-                    self.logger.info(f"Reduced {content_type_str} items from {base_count} to {num_items} due to low feedback ({avg_feedback:.2f})")
-                elif avg_feedback > 0.7:  # Liked content - increase quantity
-                    # Increase by 20-50% for liked content
-                    increase_factor = 1.2 + ((avg_feedback - 0.7) * 1.0)  # 1.2 to 1.5 range
-                    num_items = min(int(base_count * increase_factor), base_count * 2)  # Cap at 2x
-                    self.logger.info(f"Increased {content_type_str} items from {base_count} to {num_items} due to high feedback ({avg_feedback:.2f})")
-              else:
-                  num_items = base_count
-            else:
-                num_items = base_count
+        if session_id:
+            self.session_context[session_id] = {
+                "chunks": response.chunks,
+                "summary": response.summary
+            }
+            self.logger.info(f"Stored {len(response.chunks)} chunks in session {session_id} (total {sum(len(c) for c in response.chunks)} chars)")
+            self.logger.info(f"Session context keys: {list(self.session_context.keys())}")
         else:
-            num_items = num_items
-    else:
-        # For MIXED, num_items is not used - adaptive counts are in feedback_context
-        num_items = None
-        self.logger.info(f"Mixed bundle: quiz={feedback_context.get('quiz', {}).get('adaptive_count', 'N/A')}, "
-                       f"flashcard={feedback_context.get('flashcard', {}).get('adaptive_count', 'N/A')}, "
-                       f"interactive={feedback_context.get('interactive', {}).get('adaptive_count', 'N/A')}")
+            self.logger.warning("No session_id provided in extract params, chunks will not be stored in session context")
+        
+        return {
+            "success": response.success,
+            "chunks": response.chunks,
+            "summary": response.summary,
+            "error": response.error
+        }
     
+    def _handle_generate(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Route generation request to LLM Agent"""
+        from ..agents.llm_agent import LLMAgent
+        
+        llm_agent = LLMAgent()
+        
+        # Determine content type
+        content_type_str = params.get("content_type", "quiz")
+        content_type = ContentType(content_type_str)
+        
+        # Get chunks from session or params
+        chunks = params.get("chunks", [])
+        session_id = params.get("session_id")
+        
+        if not chunks and session_id:
+            self.logger.info(f"Generate handler - session_id: {session_id}")
+            self.logger.info(f"Available session context keys: {list(self.session_context.keys())}")
+            session_data = self.session_context.get(session_id, {})
+            chunks = session_data.get("chunks", [])
+            self.logger.info(f"Retrieved {len(chunks)} chunks from session {session_id}")
+            if chunks:
+                self.logger.info(f"First chunk preview: {chunks[0][:100]}...")
+        
+        # Fallback: if still no chunks, try to get from params (in case UI passed them directly)
+        if not chunks:
+            # Check if chunks were passed in params but with a different key
+            if "extracted_chunks" in params:
+                chunks = params.get("extracted_chunks", [])
+                self.logger.info(f"Retrieved {len(chunks)} chunks from params.extracted_chunks")
+        
+        # Filter out empty chunks
+        if chunks:
+            chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
+            self.logger.info(f"After filtering empty chunks: {len(chunks)} chunks remaining")
+        
+        # Validate chunks are present and non-empty
+        if not chunks:
+            error_msg = "No content chunks available. Please extract text from a file first."
+            self.logger.error(error_msg)
+            return {
+                "success": False,
+                "content_type": content_type.value,
+                "data": {},
+                "error": error_msg
+            }
+        
+        # Filter out empty chunks
+        chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
+        
+        if not chunks:
+            error_msg = "All extracted chunks are empty. PDF extraction may have failed."
+            self.logger.error(error_msg)
+            return {
+                "success": False,
+                "content_type": content_type.value,
+                "data": {},
+                "error": error_msg
+            }
+        
+        self.logger.info(f"Generating {content_type.value} with {len(chunks)} chunks (total {sum(len(c) for c in chunks)} chars)")
+        
+        # Reload state to get latest feedback before generating context
+        self.state = load_state(self.username)
+        
+        # Get feedback context for content adaptation
+        # For mixed bundle, get context for all types and calculate adaptive quantities
+        if content_type == ContentType.MIXED:
+            quiz_fc = self._get_feedback_context("quiz")
+            flashcard_fc = self._get_feedback_context("flashcard")
+            interactive_fc = self._get_feedback_context("interactive")
+            
+            feedback_context = {
+                "quiz": quiz_fc,
+                "flashcard": flashcard_fc,
+                "interactive": interactive_fc
+            }
+            
+            # Calculate adaptive quantities for each type in mixed bundle
+            # Store in params so LLM agent can use them
+            base_quiz = self._calculate_item_count(ContentType.QUIZ, len(chunks))
+            base_flashcard = self._calculate_item_count(ContentType.FLASHCARD, len(chunks))
+            base_interactive = self._calculate_item_count(ContentType.INTERACTIVE, len(chunks))
+            
+            self.logger.info(f"Base counts for {len(chunks)} chunks: quiz={base_quiz}, flashcard={base_flashcard}, interactive={base_interactive}")
+            
+            # Adjust based on feedback
+            quiz_count = self._calculate_adaptive_count(base_quiz, quiz_fc, "quiz")
+            flashcard_count = self._calculate_adaptive_count(base_flashcard, flashcard_fc, "flashcard")
+            interactive_count = self._calculate_adaptive_count(base_interactive, interactive_fc, "interactive")
+            
+            if quiz_count != base_quiz:
+                self.logger.info(f"Quiz count adjusted from {base_quiz} to {quiz_count} based on feedback")
+            
+            # Store in feedback_context for LLM agent to use
+            feedback_context["quiz"]["adaptive_count"] = quiz_count
+            feedback_context["flashcard"]["adaptive_count"] = flashcard_count
+            feedback_context["interactive"]["adaptive_count"] = interactive_count
+        else:
+            feedback_context = self._get_feedback_context(content_type_str)
+        
+        # Calculate dynamic item count based on chunks AND feedback
+        # For MIXED, num_items is not used (each type has its own adaptive count)
+        num_items = params.get("num_items")
+        if content_type != ContentType.MIXED:
+            if num_items is None:
+                base_count = self._calculate_item_count(content_type, len(chunks))
+                # Adjust quantity based on feedback
+                if feedback_context.get("has_feedback"):
+                    avg_feedback = feedback_context.get("average_feedback", 0.5)
+                    if avg_feedback < 0.4:  # Disliked content
+                        # Reduce by 40-60% for disliked content
+                        reduction_factor = 0.4 + (avg_feedback * 0.4)  # 0.4 to 0.56 range
+                        num_items = max(2, int(base_count * reduction_factor))
+                        self.logger.info(f"Reduced {content_type_str} items from {base_count} to {num_items} due to low feedback ({avg_feedback:.2f})")
+                    elif avg_feedback > 0.7:  # Liked content - increase quantity
+                        # Increase by 20-50% for liked content
+                        increase_factor = 1.2 + ((avg_feedback - 0.7) * 1.0)  # 1.2 to 1.5 range
+                        num_items = min(int(base_count * increase_factor), base_count * 2)  # Cap at 2x
+                        self.logger.info(f"Increased {content_type_str} items from {base_count} to {num_items} due to high feedback ({avg_feedback:.2f})")
+                    else:
+                        num_items = base_count
+                else:
+                    num_items = base_count
+            else:
+                num_items = num_items
+        else:
+            # For MIXED, num_items is not used - adaptive counts are in feedback_context
+            num_items = None
+            self.logger.info(f"Mixed bundle: quiz={feedback_context.get('quiz', {}).get('adaptive_count', 'N/A')}, "
+                           f"flashcard={feedback_context.get('flashcard', {}).get('adaptive_count', 'N/A')}, "
+                           f"interactive={feedback_context.get('interactive', {}).get('adaptive_count', 'N/A')}")
+        
 
-      request = GenerationRequest(    
-          content_type=content_type,
-          chunks=chunks,
-          num_items=num_items,
-          context=params.get("context"),
-          feedback_context=feedback_context
-      )
-      
-      response = llm_agent.generate(request)
-      
-      return {
-          "success": response.success,
-          "content_type": response.content_type.value,
-          "data": response.data,
-          "error": response.error
-      }
- def _handle_update_rl(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        request = GenerationRequest(    
+            content_type=content_type,
+            chunks=chunks,
+            num_items=num_items,
+            context=params.get("context"),
+            feedback_context=feedback_context
+        )
+        
+        response = llm_agent.generate(request)
+        
+        return {
+            "success": response.success,
+            "content_type": response.content_type.value,
+            "data": response.data,
+            "error": response.error
+        }
+    
+    def _handle_update_rl(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Route feedback update to RL Agent"""
         try:
             from ..agents.rl_agent import RLAgent
