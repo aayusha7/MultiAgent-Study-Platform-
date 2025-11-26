@@ -378,3 +378,86 @@ class ManagerAgent:
         """Get session context"""
         return self.session_context.get(session_id, {})
     
+    def _get_feedback_context(self, content_type: str) -> Dict[str, Any]:
+        """
+        Analyze feedback history to create adaptation context for content generation.
+        
+        Args:
+            content_type: Type of content being generated ("quiz", "flashcard", "interactive")
+        
+        Returns:
+            Dictionary with feedback insights for content adaptation
+        """
+        feedback_context = {
+            "has_feedback": False,
+            "average_feedback": 0.5,
+            "feedback_count": 0,
+            "positive_rate": 0.5,
+            "adaptation_instructions": ""
+        }
+        
+        # Get feedback history for this content type
+        mode_history = [entry for entry in self.state.mode_history if entry.get("mode") == content_type]
+        
+        if not mode_history:
+            return feedback_context
+        
+        feedback_context["has_feedback"] = True
+        feedback_context["feedback_count"] = len(mode_history)
+        
+        # Calculate average feedback
+        feedbacks = [entry.get("feedback", 0.5) for entry in mode_history]
+        feedback_context["average_feedback"] = sum(feedbacks) / len(feedbacks) if feedbacks else 0.5
+        
+        # Calculate positive rate
+        positive_count = sum(1 for f in feedbacks if f > 0.5)
+        feedback_context["positive_rate"] = positive_count / len(feedbacks) if feedbacks else 0.5
+        
+        # Get recent feedback (last 5)
+        recent_feedbacks = feedbacks[-5:]
+        recent_avg = sum(recent_feedbacks) / len(recent_feedbacks) if recent_feedbacks else 0.5
+        
+        # Create adaptation instructions based on feedback patterns
+        adaptation_instructions = []
+        
+        if recent_avg > 0.7:
+            # User likes current content - maintain or slightly enhance
+            if content_type == "quiz":
+                adaptation_instructions.append("User has been enjoying the quiz questions. Maintain similar difficulty and style.")
+            elif content_type == "flashcard":
+                adaptation_instructions.append("User finds flashcards helpful. Keep similar complexity and clarity.")
+            else:
+                adaptation_instructions.append("User enjoys interactive lessons. Maintain similar step-by-step approach.")
+        elif recent_avg < 0.4:
+            # User dislikes current content - adapt significantly
+            if content_type == "quiz":
+                adaptation_instructions.append("User found previous questions challenging. Make questions SIGNIFICANTLY EASIER and more straightforward.")
+                adaptation_instructions.append("Focus on clear, direct questions with concise explanations. Make them more ENGAGING and INTERESTING with practical examples from the source.")
+                adaptation_instructions.append("Prioritize questions that are fun, relatable, and easier to understand.")
+            elif content_type == "flashcard":
+                adaptation_instructions.append("User found previous flashcards difficult. Use MUCH SIMPLER language and more focused concepts.")
+                adaptation_instructions.append("Make flashcards more INTERESTING and ENGAGING with memorable examples and clear connections.")
+                adaptation_instructions.append("Keep concepts bite-sized and easy to remember.")
+            else:
+                adaptation_instructions.append("User found previous interactive content complex. Break down into MUCH SMALLER, CLEARER steps.")
+                adaptation_instructions.append("Make the content MORE INTERESTING and ENGAGING with practical examples, analogies, and real-world connections from the source.")
+                adaptation_instructions.append("Use a conversational, friendly tone. Make each step feel rewarding and easy to complete.")
+        else:
+            # Mixed feedback - balanced approach
+            adaptation_instructions.append("User has mixed feedback. Provide balanced content with clear explanations.")
+        
+        # Add difficulty guidance based on feedback variance
+        if len(recent_feedbacks) > 1:
+            variance = sum((f - recent_avg) ** 2 for f in recent_feedbacks) / len(recent_feedbacks)
+            if variance > 0.1:
+                adaptation_instructions.append("User preferences vary. Provide a mix of difficulty levels.")
+        
+        feedback_context["adaptation_instructions"] = " ".join(adaptation_instructions)
+        
+        self.logger.info(
+            f"Feedback context for {content_type}: "
+            f"avg={feedback_context['average_feedback']:.2f}, "
+            f"positive_rate={feedback_context['positive_rate']:.2f}, "
+            f"count={feedback_context['feedback_count']}"
+        )
+        
