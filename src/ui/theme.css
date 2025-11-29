@@ -1,0 +1,203 @@
+/* Theme CSS for Multi-Agent Learning Platform */
+
+/* Dark/Light mode toggle support (future enhancement) */
+:root {
+    --bg-color: #ffffff;
+    --text-color: #262730;
+    --primary-color: #ff4b4b;
+    --secondary-color: #f0f2f6;
+    --accent-color: #1f77b4;
+}
+
+[data-theme="dark"] {
+    --bg-color: #0e1117;
+    --text-color: #fafafa;
+    --primary-color: #ff4b4b;
+    --secondary-color: #262730;
+    --accent-color: #4a9eff;
+}
+
+/* Smooth transitions */
+* {
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Custom button styles */
+.stButton > button {
+    border-radius: 8px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Card-like containers */
+.stExpander {
+    border-radius: 8px;
+    border: 1px solid var(--secondary-color);
+}
+
+/* Quiz question styling */
+.quiz-question {
+    font-size: 1.2em;
+    font-weight: 600;
+    margin-bottom: 1rem;
+}
+
+/* Flashcard flip animation - Amazing 3D effect */
+.flashcard-container {
+    perspective: 1200px;
+    width: 100%;
+    margin: 20px auto;
+    max-width: 600px;
+}
+
+.flashcard {
+    position: relative;
+    width: 100%;
+    height: 300px;
+    transform-style: preserve-3d;
+    transition: transform 0.8s cubic-bezier(0.4, 0.2, 0.2, 1);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.flashcard.flipped {
+    transform: rotateY(180deg);
+}
+
+.flashcard-front,
+.flashcard-back {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 30px;
+    box-sizing: border-box;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    text-align: center;
+}
+
+.flashcard-back {
+    transform: rotateY(180deg);
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.flashcard-front h3,
+.flashcard-back h3 {
+    margin: 0;
+    font-size: 1.5em;
+    font-weight: 600;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.flashcard-front p,
+.flashcard-back p {
+    margin: 15px 0 0 0;
+    font-size: 1.1em;
+    line-height: 1.6;
+    opacity: 0.95;
+}
+
+.flashcard-icon {
+    font-size: 3em;
+    margin-bottom: 15px;
+    animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+    0%, 100% {
+        transform: translateY(0px);
+    }
+    50% {
+        transform: translateY(-10px);
+    }
+}
+
+.flashcard:hover {
+    transform: scale(1.02);
+}
+
+.flashcard.flipped:hover {
+    transform: rotateY(180deg) scale(1.02);
+}
+
+.flashcard:active {
+    transform: scale(0.98);
+}
+
+.flashcard.flipped:active {
+    transform: rotateY(180deg) scale(0.98);
+}
+
+/* Flip button enhancement */
+.flip-button {
+    margin-top: 20px;
+    padding: 12px 30px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 25px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.flip-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+}
+
+.flip-button:active {
+    transform: translateY(0);
+}
+
+/* Card counter animation */
+.card-counter {
+    text-align: center;
+    margin-top: 15px;
+    font-size: 0.9em;
+    color: #666;
+    animation: fadeIn 0.5s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Navigation buttons for flashcards */
+.flashcard-nav {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 20px;
+    gap: 10px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .stButton > button {
+        width: 100%;
+    }
+}
