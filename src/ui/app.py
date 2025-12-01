@@ -850,9 +850,9 @@ def main():
                                     generate_mixed_bundle()
                                 else:
                                     # For specific preferences, use that mode
-                            generate_content_for_mode(preference)
-                        else:
-                            generate_mixed_bundle()
+                                    generate_content_for_mode(preference)
+                            else:
+                                generate_mixed_bundle()
                     else:
                         st.error(f"Error: {extract_result.get('error')}")
                     
@@ -877,7 +877,7 @@ def main():
         st.markdown("---")
         if st.button("📊 View Analytics Dashboard", use_container_width=True):
             st.session_state.show_analytics = True
-                st.rerun()
+            st.rerun()
         
         # Show logs
         with st.expander("📋 View Logs"):
