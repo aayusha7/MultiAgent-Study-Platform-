@@ -816,13 +816,24 @@ Always return valid JSON. NEVER hallucinate or add external knowledge. Better to
         # Build detailed error message
         errors = []
         if not (quiz_response.success and quiz_response.data):
-            errors.append(f"Quiz: {quiz_response.error or 'Failed to generate'}")
+            quiz_error = quiz_response.error or 'Failed to generate'
+            errors.append(f"Quiz: {quiz_error}")
+            self.logger.error(f"Quiz generation failed: {quiz_error}")
         if not (flashcard_response.success and flashcard_response.data):
-            errors.append(f"Flashcards: {flashcard_response.error or 'Failed to generate'}")
+            flashcard_error = flashcard_response.error or 'Failed to generate'
+            errors.append(f"Flashcards: {flashcard_error}")
+            self.logger.error(f"Flashcard generation failed: {flashcard_error}")
         if not (interactive_response.success and interactive_response.data):
-            errors.append(f"Interactive: {interactive_response.error or 'Failed to generate'}")
+            interactive_error = interactive_response.error or 'Failed to generate'
+            errors.append(f"Interactive: {interactive_error}")
+            self.logger.error(f"Interactive generation failed: {interactive_error}")
         
-        error_msg = None if success else f"Failed to generate: {', '.join(errors)}"
+        # Always provide detailed error message if any failed
+        if errors:
+            error_msg = f"Failed to generate: {', '.join(errors)}"
+            self.logger.error(f"Mixed bundle generation failed. Details: {error_msg}")
+        else:
+            error_msg = None
         
         return GenerationResponse(
             content_type=ContentType.MIXED,
