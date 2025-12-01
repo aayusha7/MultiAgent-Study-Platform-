@@ -18,14 +18,32 @@ class LLMAgent:
     
     def __init__(self):
         self.logger = logger.get_logger()
-        api_key = os.getenv("OPENAI_API_KEY")
-        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        
+        # Try to get from Streamlit secrets first (for Streamlit Cloud)
+        api_key = None
+        model = "gpt-4o-mini"
+        
+        try:
+            import streamlit as st
+            secrets = st.secrets
+            api_key = secrets.get("OPENAI_API_KEY")
+            model = secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+        except (ImportError, AttributeError, KeyError, FileNotFoundError, RuntimeError):
+            # Streamlit not available or secrets not configured
+            pass
+        
+        # Fall back to environment variables
+        if not api_key:
+            api_key = os.getenv("OPENAI_API_KEY")
+        if not model or model == "gpt-4o-mini":
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         
         if not api_key:
-            raise ValueError("OPENAI_API_KEY not found in environment variables")
+            raise ValueError("OPENAI_API_KEY not found in Streamlit secrets or environment variables. Please configure it in Streamlit Cloud secrets or .env file.")
         
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.logger.info(f"LLM Agent initialized with model: {self.model}")
     
     def generate(self, request: GenerationRequest) -> GenerationResponse:
         """
